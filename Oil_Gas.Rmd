@@ -1,0 +1,322 @@
+---
+title: "North Dakota Oil and Gas Project"
+author: "Kaitlynn Walston"
+output: pdf_document
+---
+
+```{r libraries, echo=FALSE, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(readxl)
+
+```
+
+
+
+```{r dataset, echo=FALSE}
+oil_data <- read_xls("GF_ND_Monthly.xls")
+
+months <- 1:nrow(oil_data)
+oil_barrels <- oil_data$'Oil/BBL'
+gas_mcf <- oil_data$'Gas/MCF'
+
+#constants
+price_oil <- 60
+price_gas <- 3.00
+limit_oil <- 5
+limit_gas <- 10
+
+oil_data <- oil_data %>% mutate(
+  Month_Index = 1:n(),
+  Year = rep(2021:2025, each = 12),
+  Oil_Revenue = oil_barrels * price_oil,
+  Gas_Revenue = gas_mcf * price_gas,
+  Total_Revenue = Oil_Revenue + Gas_Revenue
+)
+
+
+```
+
+
+```{r, echo=FALSE, message=FALSE}
+yearly_sum <- oil_data %>%
+  group_by(Year) %>%
+  summarise(
+    Avg_Monthly_Oil = mean(oil_barrels),
+    Avg_Monthly_Gas = mean(gas_mcf),
+    Total_Oil = sum(oil_barrels),
+    Total_Gas = sum(gas_mcf),
+    Annual_Revenue = sum(Total_Revenue)
+  )
+
+yearly_sum <- oil_data %>%
+  group_by(Year) %>%
+  summarise(
+    Avg_Monthly_Oil = round(mean(`Oil/BBL`)),
+    Avg_Monthly_Gas = round(mean(`Gas/MCF`)),
+    Total_Oil = round(sum(`Oil/BBL`)),
+    Total_Gas  = round(sum(`Gas/MCF`)),
+    Annual_Revenue      = round(sum(Total_Revenue))
+  )
+
+# Build display table manually so formatC works correctly row by row
+display_table <- data.frame(
+  Year              = yearly_sum$Year,
+  `Avg Oil (BBL/mo)` = formatC(yearly_sum$Avg_Monthly_Oil, format = "d", big.mark = ","),
+  `Avg Gas (MCF/mo)` = formatC(yearly_sum$Avg_Monthly_Gas, format = "d", big.mark = ","),
+  `Total Oil (BBL)`  = formatC(yearly_sum$Total_Oil,       format = "d", big.mark = ","),
+  `Total Gas (MCF)`  = formatC(yearly_sum$Total_Gas,       format = "d", big.mark = ","),
+  `Annual Revenue`   = paste0("$", formatC(yearly_sum$Annual_Revenue, format = "d", big.mark = ",")),  check.names = FALSE
+)
+
+knitr::kable(display_table, align = c("c", "r", "r", "r", "r", "r"))
+```
+
+
+
+```{r calculations, echo=FALSE}
+# decline rate (d)
+oil_model <- lm(log(oil_barrels) ~ months)
+d_oil <- -coef(oil_model)[2]  # monthly decline rate
+
+gas_model <- lm(log(gas_mcf) ~ months)
+d_gas <- -coef(gas_model)[2]  # monthly decline rate
+
+
+# remaining life (months)
+cur_q_oil <- tail(oil_barrels, 1)
+cur_q_gas <- tail(gas_mcf, 1)
+
+m_left_oil <- log(cur_q_oil / limit_oil) / d_oil
+m_left_gas <- log(cur_q_gas / limit_gas) / d_gas
+
+
+# future revenue
+reserv_oil <- (cur_q_oil - limit_oil) / d_oil
+reserv_gas <- (cur_q_gas - limit_gas) / d_gas
+
+rev_oil <- reserv_oil * price_oil
+rev_gas <- reserv_gas * price_gas
+
+```
+
+
+
+```{r, echo=FALSE, message=FALSE}
+cat("--- Decline Rates ---\n")
+cat("Oil monthly decline rate:", round(d_oil, 5), "\n")
+cat("Gas monthly decline rate:", round(d_gas, 5), "\n")
+```
+***
+```{r, echo=FALSE, message=FALSE}
+cat("--- Remaining Life ---\n")
+cat("Oil will last approx.", round(m_left_oil), "more months (",round(m_left_oil/12, 1), "years)\n")
+cat("Gas will last approx.", round(m_left_gas), "more months (",round(m_left_gas/12, 1), "years)\n")
+```
+***
+```{r, echo=FALSE, message=FALSE}
+cat("--- Future Revenue Estimate ---\n")
+cat("Estimated Future Oil Revenue: $", formatC(round(rev_oil), format = "d", big.mark = ","), "\n")
+cat("Estimated Future Gas Revenue: $", formatC(round(rev_gas), format = "d", big.mark = ","), "\n")
+cat("Estimated Total Future Revenue: $", formatC(round(rev_oil + rev_gas), format = "d", big.mark = ","), "\n")
+```
+
+
+```{r forecasting, echo=FALSE}
+
+next_months <- (nrow(oil_data) + 1):(nrow(oil_data) + 24)
+
+pred_oil <- exp(predict(oil_model, newdata = data.frame(months = next_months)))
+pred_gas <- exp(predict(gas_model, newdata = data.frame(months = next_months)))
+
+forecast_df <- data.frame(
+  Month = next_months,
+  Predicted_Oil = pred_oil,
+  Predicted_Gas = pred_gas,
+  Predicted_Rev = (pred_oil * price_oil) + (pred_gas * price_gas)
+)
+
+```
+
+
+
+
+
+*****
+
+
+
+```{r plot_oil, echo=FALSE, fig.width=8, fig.height=6}
+# Build the fitted curve from the model so it follows the exponential shape
+oil_fit <- data.frame(
+  Month_Index = months,
+  Fitted_Oil  = exp(fitted(oil_model))
+)
+
+# Colors — change these to whatever you like
+col_actual  <- "blue"   # historical data points
+col_fit     <- "orchid"   # historical trend line
+col_forecast <- "green"        # forecast line
+
+ggplot() +
+  geom_point(data = oil_data,
+             aes(x = Month_Index, y = `Oil/BBL`, color = "Actual"),
+             alpha = 0.6, size = 2) +
+  geom_line(data = oil_fit,
+            aes(x = Month_Index, y = Fitted_Oil, color = "Trend"),
+            linetype = "dashed", linewidth = 0.9) +
+  geom_line(data = forecast_df,
+            aes(x = Month, y = Predicted_Oil, color = "Forecast"),
+            linewidth = 1.2) +
+  scale_color_manual(
+    name   = NULL,
+    values = c("Actual"= col_actual,
+               "Trend"= col_fit,
+               "Forecast" = col_forecast),
+    breaks = c("Actual", "Trend", "Forecast")   # legend order
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Oil Production: Historical + 24-Month Forecast",
+    x     = "Month  (1 = Jan 2021)",
+    y     = "Oil Production (BBL/month)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+*****
+
+```{r plot_gas,echo=FALSE, fig.width=8, fig.height=6}
+# Build the fitted curve from the model
+gas_fit <- data.frame(
+  Month_Index = months,
+  Fitted_Gas  = exp(fitted(gas_model))
+)
+
+# Colors — change these to whatever you like
+col_actual_g  <- "darkorchid"
+col_fit_g     <- "violetred"
+col_forecast_g <- "cyan"
+
+ggplot() +
+  geom_point(data = oil_data,
+             aes(x = Month_Index, y = `Gas/MCF`, color = "Actual"),
+             alpha = 0.6, size = 2) +
+  geom_line(data = gas_fit,
+            aes(x = Month_Index, y = Fitted_Gas, color = "Trend"),
+            linetype = "dashed", linewidth = 0.9) +
+  geom_line(data = forecast_df,
+            aes(x = Month, y = Predicted_Gas, color = "Forecast"),
+            linewidth = 1.2) +
+  scale_color_manual(
+    name   = NULL,
+    values = c("Actual"   = col_actual_g,
+               "Trend"    = col_fit_g,
+               "Forecast" = col_forecast_g),
+    breaks = c("Actual", "Trend", "Forecast")
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Gas Production: Historical + 24-Month Forecast",
+    x     = "Month  (1 = Jan 2021)",
+    y     = "Gas Production (MCF/month)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+*****
+
+```{r plot_revenue, echo=FALSE, fig.width=8, fig.height=6}
+# Annual revenue line chart — oil, gas, and total trends over 5 years
+yearly_rev <- oil_data %>%
+  group_by(Year) %>%
+  summarise(
+    Oil_Rev   = sum(`Oil/BBL`) * price_oil,
+    Gas_Rev   = sum(`Gas/MCF`) * price_gas,
+    Total_Rev = Oil_Rev + Gas_Rev
+  )
+
+yearly_long <- yearly_rev %>%
+  pivot_longer(cols = c(Oil_Rev, Gas_Rev, Total_Rev),
+               names_to  = "Type",
+               values_to = "Revenue") %>%
+  mutate(Type = recode(Type,
+                       Oil_Rev   = "Oil",
+                       Gas_Rev   = "Gas",
+                       Total_Rev = "Total"))
+
+# Colors — change these to whatever you like
+col_oil   <- "mediumvioletred"
+col_gas   <- "goldenrod"
+col_total <- "aquamarine"
+
+ggplot(yearly_long, aes(x = Year, y = Revenue, color = Type, group = Type)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_text(aes(label = paste0("$", round(Revenue / 1e6), "M"),
+                vjust = case_when(
+                  Type == "Total" ~ -1,   # Total labels above
+                  Type == "Oil"   ~  2,   # Oil labels below
+                  Type == "Gas"   ~ -1    # Gas labels above
+                )),
+            size = 3, show.legend = FALSE) +
+  scale_color_manual(
+    name   = NULL,
+    values = c(Oil = col_oil, Gas = col_gas, Total = col_total)
+  ) +
+  scale_x_continuous(breaks = 2021:2025) +
+  scale_y_continuous(labels = scales::dollar,
+                     expand = expansion(mult = c(0.1, 0.15))) +
+  labs(
+    title = "Annual Revenue by Year  (2021 - 2025)",
+    x     = "Year",
+    y     = "Revenue (USD)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+*****
+
+```{r plot_forecast_revenue, echo=FALSE, fig.width=8, fig.height=6}
+# Forecasted monthly revenue over the next 24 months
+total_proj <- formatC(round(sum(forecast_df$Predicted_Rev)), format = "d", big.mark = ",")
+
+# Color — change to whatever you like
+col_rev <- "darkblue"
+
+ggplot(forecast_df, aes(x = Month, y = Predicted_Rev)) +
+  geom_area(aes(fill = "Projected Revenue"), alpha = 0.2) +
+  geom_line(aes(color = "Projected Revenue"), linewidth = 1.2) +
+  scale_color_manual(name = NULL, values = c("Projected Revenue" = col_rev)) +
+  scale_fill_manual( name = NULL, values = c("Projected Revenue" = col_rev)) +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(
+    title   = paste0("Projected Monthly Revenue  —  Next 24 Months"),
+    x = "Month Index",
+    y = "Monthly Revenue (USD)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+paste0("Total projected over 24 months: $", total_proj)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
